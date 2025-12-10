@@ -8,6 +8,8 @@
 python ros_deploy/api_server.py --host 0.0.0.0 --port 8000 --model-path /path/to/uninavid/checkpoint
 ```
 
+> 提示：`api_server.py` 会自动将仓库根目录添加到 `PYTHONPATH`，因此即使在 `ros_deploy/` 目录内运行（如 `cd ros_deploy && python api_server.py`）也能正确导入 `offline_eval_uninavid` 与模型权重。使用 `uvicorn ros_deploy.api_server:app` 时仍建议在仓库根目录下执行，避免与同名 ROS 包混淆。
+
 `--model-path` 可覆盖环境变量 `UNINAVID_MODEL_PATH`。如果两者都未提供，服务器默认使用 `model_zoo/uninavid-7b-full-224-video-fps-1-grid-2`。
 
 ## 端点

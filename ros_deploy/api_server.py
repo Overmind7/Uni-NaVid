@@ -5,6 +5,7 @@ This server exposes endpoints to run Uni-NaVid on single RGB frames.
 import argparse
 import base64
 import os
+import sys
 import threading
 from typing import List, Optional
 
@@ -13,6 +14,13 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import uvicorn
+
+
+# Ensure repository root is on sys.path even when executed from inside the
+# ros_deploy package directory (e.g., `cd ros_deploy && python api_server.py`).
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from offline_eval_uninavid import UniNaVid_Agent
 
@@ -121,7 +129,7 @@ def main() -> None:
     if args.model_path:
         os.environ["UNINAVID_MODEL_PATH"] = args.model_path
 
-    uvicorn.run("ros_deploy.api_server:app", host=args.host, port=args.port, reload=False)
+    uvicorn.run(app, host=args.host, port=args.port, reload=False)
 
 
 if __name__ == "__main__":
