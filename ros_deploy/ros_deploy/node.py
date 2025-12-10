@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """ROS node that wraps the UniNaVid agent for online navigation."""
 
+import math
 import os
 import threading
 import yaml
@@ -26,6 +27,9 @@ class UniNaVidRosNode:
         self.lock = threading.Lock()
 
         self.config = self._load_config()
+        self.publish_rate_hz = 10.0
+        self.forward_distance_m = 0.5
+        self.spin_init_duration_s = 0.5
         self.instruction = rospy.get_param("~instruction", self.config.get("default_instruction", ""))
 
         rospy.loginfo("Loading UniNaVid agent from %s", self.config["model_path"])
@@ -116,31 +120,57 @@ class UniNaVidRosNode:
         if not actions:
             rospy.logwarn("No actions returned by UniNaVid agent; publishing stop Twist.")
             twist = Twist()
+            self.cmd_pub.publish(twist)
+            return
+
+        primary_action = actions[0].strip().lower()
+        twist, duration = self._action_to_twist(primary_action)
+        rospy.loginfo(
+            "Action %s -> Twist linear.x=%.3f angular.z=%.3f for %.2f seconds @ %.1f Hz",
+            primary_action,
+            twist.linear.x,
+            twist.angular.z,
+            duration,
+            self.publish_rate_hz,
+        )
+        if duration > 0:
+            self._publish_twist_for_duration(twist, duration)
         else:
-            primary_action = actions[0].strip().lower()
-            twist = self._action_to_twist(primary_action)
-            rospy.loginfo(
-                "Action %s -> Twist linear.x=%.3f angular.z=%.3f",
-                primary_action,
-                twist.linear.x,
-                twist.angular.z,
-            )
+            self.cmd_pub.publish(twist)
 
-        self.cmd_pub.publish(twist)
-
-    def _action_to_twist(self, action: str) -> Twist:
+    def _action_to_twist(self, action: str) -> tuple[Twist, float]:
         twist = Twist()
+        duration = 0.0
         if action == "forward":
             twist.linear.x = float(self.config["linear_speed"])
+            if twist.linear.x > 0:
+                duration = self.forward_distance_m / twist.linear.x
         elif action == "left":
             twist.angular.z = float(self.config["angular_speed"])
+            if twist.angular.z != 0:
+                duration = math.radians(30.0) / abs(twist.angular.z) + self.spin_init_duration_s
         elif action == "right":
             twist.angular.z = -float(self.config["angular_speed"])
+            if twist.angular.z != 0:
+                duration = math.radians(30.0) / abs(twist.angular.z) + self.spin_init_duration_s
         elif action == "stop":
             pass
         else:
             rospy.logwarn("Unknown action '%s'; sending zero Twist.", action)
-        return twist
+        return twist, duration
+
+    def _publish_twist_for_duration(self, twist: Twist, duration: float) -> None:
+        if duration <= 0:
+            return
+
+        rate = rospy.Rate(self.publish_rate_hz)
+        end_time = rospy.Time.now().to_sec() + duration
+        while rospy.Time.now().to_sec() < end_time and not rospy.is_shutdown():
+            self.cmd_pub.publish(twist)
+            rate.sleep()
+
+        # Ensure the robot stops after finishing the command window.
+        self.cmd_pub.publish(Twist())
 
 
 def main() -> None:

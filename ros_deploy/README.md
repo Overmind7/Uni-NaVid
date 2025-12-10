@@ -72,6 +72,12 @@ angular_speed: 0.5
 default_instruction: "Please navigate according to the current mission."
 ```
 
+## 速度发布策略
+
+- 节点以 10 Hz 的频率持续发布速度指令。
+- `forward` 默认前进 0.5 m，发布时间由 `0.5m / linear_speed` 计算。
+- `left`/`right` 每次旋转 30°（`pi/6` 弧度），持续时间由 `30° / |angular_speed|` 计算，并额外增加 0.5 s 的固定发布时间以完成轮子初始化。
+
 ## 编译
 
 ```bash
