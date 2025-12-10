@@ -24,7 +24,7 @@ if REPO_ROOT not in sys.path:
 
 from offline_eval_uninavid import UniNaVid_Agent
 
-DEFAULT_MODEL_PATH = "model_zoo/uninavid-7b-full-224-video-fps-1-grid-2"
+DEFAULT_MODEL_PATH = os.path.join(REPO_ROOT, "model_zoo", "uninavid-7b-full-224-video-fps-1-grid-2")
 
 app = FastAPI(title="Uni-NaVid API", version="1.0")
 
