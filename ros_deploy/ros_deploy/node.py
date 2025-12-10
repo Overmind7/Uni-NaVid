@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""ROS node that wraps the UniNaVid agent for online navigation."""
+
+import os
+import threading
+import yaml
+
+import numpy as np
+import rospkg
+import rospy
+from cv_bridge import CvBridge
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import CameraInfo, Image
+
+from ros_deploy.srv import SetInstruction, SetInstructionResponse
+from offline_eval_uninavid import UniNaVid_Agent
+
+
+class UniNaVidRosNode:
+    """Subscribe to RGB frames, run the UniNaVid agent, and publish velocity commands."""
+
+    def __init__(self) -> None:
+        self.bridge = CvBridge()
+        self.latest_image = None
+        self.latest_camera_info = None
+        self.lock = threading.Lock()
+
+        self.config = self._load_config()
+        self.instruction = rospy.get_param("~instruction", self.config.get("default_instruction", ""))
+
+        rospy.loginfo("Loading UniNaVid agent from %s", self.config["model_path"])
+        self.agent = UniNaVid_Agent(self.config["model_path"])
+
+        self.cmd_pub = rospy.Publisher(self.config["cmd_vel_topic"], Twist, queue_size=1)
+        self.image_sub = rospy.Subscriber(
+            self.config["image_topic"], Image, self._image_callback, queue_size=1, buff_size=2 ** 24
+        )
+        self.camera_info_sub = rospy.Subscriber(
+            self.config["camera_info_topic"], CameraInfo, self._camera_info_callback, queue_size=1
+        )
+
+        self.service = rospy.Service("~set_instruction", SetInstruction, self._handle_set_instruction)
+
+        rospy.loginfo(
+            "UniNaVid ROS node ready. Listening to %s and publishing Twist on %s.",
+            self.config["image_topic"],
+            self.config["cmd_vel_topic"],
+        )
+
+    def _load_config(self):
+        pkg_path = rospkg.RosPack().get_path("ros_deploy")
+        default_path = os.path.join(pkg_path, "config", "default.yaml")
+        config_path = rospy.get_param("~config_path", default_path)
+        config_path = os.path.realpath(config_path)
+
+        if not os.path.exists(config_path):
+            raise rospy.ROSException(f"Config file not found: {config_path}")
+
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config = yaml.safe_load(handle)
+
+        required_keys = ["image_topic", "camera_info_topic", "cmd_vel_topic", "model_path"]
+        for key in required_keys:
+            if key not in config:
+                raise rospy.ROSException(f"Missing required key '{key}' in config {config_path}")
+
+        config.setdefault("linear_speed", 0.25)
+        config.setdefault("angular_speed", 0.5)
+        config.setdefault("default_instruction", "")
+        return config
+
+    def _handle_set_instruction(self, req: SetInstruction.Request) -> SetInstructionResponse:
+        instruction = req.instruction.strip()
+        with self.lock:
+            self.instruction = instruction
+            rospy.set_param("~instruction", instruction)
+        rospy.loginfo("Instruction updated via service: %s", instruction)
+        return SetInstructionResponse(success=True, message="Instruction updated")
+
+    def _camera_info_callback(self, msg: CameraInfo) -> None:
+        with self.lock:
+            self.latest_camera_info = msg
+
+    def _image_callback(self, msg: Image) -> None:
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as exc:  # noqa: BLE001
+            rospy.logerr("Failed to convert image: %s", exc)
+            return
+
+        with self.lock:
+            self.latest_image = np.asarray(cv_image, dtype=np.uint8)
+            camera_info = self.latest_camera_info
+            instruction = rospy.get_param("~instruction", self.instruction)
+            if instruction != self.instruction:
+                rospy.loginfo("Instruction updated from parameter server: %s", instruction)
+                self.instruction = instruction
+
+        if camera_info is None:
+            rospy.logwarn_throttle(30.0, "Waiting for camera info on %s", self.config["camera_info_topic"])
+
+        self._process_frame()
+
+    def _process_frame(self) -> None:
+        with self.lock:
+            if self.latest_image is None:
+                return
+            rgb_np = self.latest_image.copy()
+            instruction = self.instruction
+
+        if not instruction:
+            rospy.logwarn_throttle(30.0, "Instruction is empty; agent will run with blank prompt.")
+
+        action_data = self.agent.act({"observations": rgb_np, "instruction": instruction})
+        actions = action_data.get("actions", []) if isinstance(action_data, dict) else []
+        if not actions:
+            rospy.logwarn("No actions returned by UniNaVid agent; publishing stop Twist.")
+            twist = Twist()
+        else:
+            primary_action = actions[0].strip().lower()
+            twist = self._action_to_twist(primary_action)
+            rospy.loginfo(
+                "Action %s -> Twist linear.x=%.3f angular.z=%.3f",
+                primary_action,
+                twist.linear.x,
+                twist.angular.z,
+            )
+
+        self.cmd_pub.publish(twist)
+
+    def _action_to_twist(self, action: str) -> Twist:
+        twist = Twist()
+        if action == "forward":
+            twist.linear.x = float(self.config["linear_speed"])
+        elif action == "left":
+            twist.angular.z = float(self.config["angular_speed"])
+        elif action == "right":
+            twist.angular.z = -float(self.config["angular_speed"])
+        elif action == "stop":
+            pass
+        else:
+            rospy.logwarn("Unknown action '%s'; sending zero Twist.", action)
+        return twist
+
+
+def main() -> None:
+    rospy.init_node("uninavid_agent")
+    UniNaVidRosNode()
+    rospy.spin()
+
+
+if __name__ == "__main__":
+    main()
