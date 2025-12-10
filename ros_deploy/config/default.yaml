@@ -1,0 +1,7 @@
+image_topic: "/rscamera_front/color/image"
+camera_info_topic: "/rscamera_front/color/camera_info"
+cmd_vel_topic: "/cmd_vel"
+model_path: "model_zoo/uninavid-7b-full-224-video-fps-1-grid-2"
+linear_speed: 0.25
+angular_speed: 0.5
+default_instruction: "Please navigate according to the current mission."
