@@ -1,22 +1,22 @@
-# Uni-NaVid API Server
+# Uni-NaVid API 服务
 
-This folder provides a lightweight FastAPI server that wraps the `UniNaVid_Agent` for single-frame navigation inference. The server loads the model once and reuses it across requests to keep latency predictable.
+该目录提供一个轻量级的 FastAPI 服务器，将 `UniNaVid_Agent` 封装为单帧导航推理服务。服务器启动时只加载一次模型并在请求之间重复复用，保持可预期的延迟。
 
-## Run the server
+## 启动服务器
 
 ```bash
 python ros_deploy/api_server.py --host 0.0.0.0 --port 8000 --model-path /path/to/uninavid/checkpoint
 ```
 
-`--model-path` overrides the `UNINAVID_MODEL_PATH` environment variable. If neither is supplied, the server defaults to `model_zoo/uninavid-7b-full-224-video-fps-1-grid-2`.
+`--model-path` 可覆盖环境变量 `UNINAVID_MODEL_PATH`。如果两者都未提供，服务器默认使用 `model_zoo/uninavid-7b-full-224-video-fps-1-grid-2`。
 
-## Endpoints
+## 端点
 
 ### `GET /health`
-Returns `{ "status": "ok" }` once the service is reachable.
+服务可达时返回 `{ "status": "ok" }`。
 
 ### `POST /warmup`
-Loads the Uni-NaVid checkpoint into memory if it is not already initialized. Response shape:
+若尚未初始化，将 Uni-NaVid 权重加载到内存。响应格式如下：
 
 ```json
 {
@@ -26,18 +26,18 @@ Loads the Uni-NaVid checkpoint into memory if it is not already initialized. Res
 ```
 
 ### `POST /predict`
-Accepts one RGB frame and an instruction, and returns the action plan predicted by the model. At least one of `image_base64` or `rgb` must be supplied.
+接受一张 RGB 图片和一段指令，返回模型预测的行动规划。`image_base64` 与 `rgb` 至少需提供其一。
 
-**Request body**
+**请求示例**
 ```json
 {
   "instruction": "move to the chair and stop",
   "image_base64": "<JPEG/PNG image encoded with base64>",
-  "rgb": [[[123, 231, 111], [125, 232, 112], ...]]  // optional HxWx3 array of uint8 RGB pixels
+  "rgb": [[[123, 231, 111], [125, 232, 112], ...]]  // 可选：HxWx3 的 uint8 RGB 数组
 }
 ```
 
-**Response body**
+**响应示例**
 ```json
 {
   "actions": ["forward", "left", "stop"],
@@ -46,18 +46,19 @@ Accepts one RGB frame and an instruction, and returns the action plan predicted 
 }
 ```
 
-`actions` is the list of navigation tokens produced by the model. `path` mirrors the waypoints returned by `UniNaVid_Agent.act`, and `step` is the action sequence index maintained by the agent.
-# ROS Deployment for Uni-NaVid
+`actions` 为模型输出的导航 token；`path` 对应 `UniNaVid_Agent.act` 返回的路径点，`step` 则是代理维护的动作序列索引。
 
-This package wraps the `UniNaVid_Agent` in a ROS node that consumes RGB camera frames and publishes velocity commands via `geometry_msgs/Twist`.
+# Uni-NaVid 的 ROS 部署
 
-## Contents
-- `ros_deploy/node.py`: ROS node that subscribes to RGB frames and camera info, runs `UniNaVid_Agent.act`, and publishes velocity commands.
-- `ros_deploy/srv/SetInstruction.srv`: Service to update the navigation instruction string at runtime.
-- `config/default.yaml`: Default topic names, model path, and velocity scaling values.
+此软件包将 `UniNaVid_Agent` 封装成 ROS 节点，订阅 RGB 相机图像并通过 `geometry_msgs/Twist` 发布速度指令。
 
-## Configuration
-Update `ros_deploy/config/default.yaml` or supply a different file via the `~config_path` parameter. Example:
+## 目录内容
+- `ros_deploy/node.py`：订阅 RGB 图像与相机信息，调用 `UniNaVid_Agent.act` 并发布速度指令的 ROS 节点。
+- `ros_deploy/srv/SetInstruction.srv`：运行时更新导航指令字符串的服务接口。
+- `config/default.yaml`：默认主题名称、模型路径与速度倍率配置。
+
+## 配置
+修改 `ros_deploy/config/default.yaml`，或通过 `~config_path` 参数指定其他配置文件。示例如下：
 
 ```yaml
 image_topic: "/rscamera_front/color/image"
@@ -69,7 +70,7 @@ angular_speed: 0.5
 default_instruction: "Please navigate according to the current mission."
 ```
 
-## Building
+## 编译
 
 ```bash
 cd /path/to/catkin_ws/src
@@ -79,32 +80,32 @@ catkin_make
 source devel/setup.bash
 ```
 
-## Running the node
+## 运行节点
 
-Start the node after sourcing your workspace:
+在已 source 工作空间后启动节点：
 
 ```bash
 rosrun ros_deploy node.py _config_path:=/full/path/to/config.yaml _instruction:="Find the kitchen"
 ```
 
-If you rely on the default configuration, simply run:
+若使用默认配置文件，直接执行：
 
 ```bash
 rosrun ros_deploy node.py
 ```
 
-## Updating the instruction
+## 更新指令
 
-- **Service call**:
+- **通过服务调用**：
 
 ```bash
 rosservice call /uninavid_agent/set_instruction "instruction: 'Turn left at the hallway'"
 ```
 
-- **Parameter update**:
+- **通过参数更新**：
 
 ```bash
 rosparam set /uninavid_agent/instruction "Turn right at the next door"
 ```
 
-The node will use the latest instruction when processing incoming frames.
+节点会在处理新图像时使用最新的指令。
