@@ -4,6 +4,7 @@
 import math
 import os
 import threading
+from typing import Tuple
 import yaml
 
 import numpy as np
@@ -138,7 +139,7 @@ class UniNaVidRosNode:
         else:
             self.cmd_pub.publish(twist)
 
-    def _action_to_twist(self, action: str) -> tuple[Twist, float]:
+    def _action_to_twist(self, action: str) -> Tuple[Twist, float]:
         twist = Twist()
         duration = 0.0
         if action == "forward":
