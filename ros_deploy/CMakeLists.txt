@@ -31,6 +31,7 @@ include_directories(
 catkin_install_python(
   PROGRAMS
     scripts/node.py
+    scripts/api_client_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

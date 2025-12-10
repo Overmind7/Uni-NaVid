@@ -54,8 +54,10 @@ python ros_deploy/api_server.py --host 0.0.0.0 --port 8000 --model-path /path/to
 
 ## 目录内容
 - `ros_deploy/node.py`：订阅 RGB 图像与相机信息，调用 `UniNaVid_Agent.act` 并发布速度指令的 ROS 节点。
+- `ros_deploy/api_client_node.py`：调用远端 Uni-NaVid API 服务，将返回的离散动作转换为 `geometry_msgs/Twist` 的 ROS 节点。
 - `ros_deploy/srv/SetInstruction.srv`：运行时更新导航指令字符串的服务接口。
 - `config/default.yaml`：默认主题名称、模型路径与速度倍率配置。
+- `config/api_client.yaml`：使用 API 服务时的默认主题、服务器地址与超时设置。
 
 ## 配置
 修改 `ros_deploy/config/default.yaml`，或通过 `~config_path` 参数指定其他配置文件。示例如下：
@@ -92,6 +94,32 @@ rosrun ros_deploy node.py _config_path:=/full/path/to/config.yaml _instruction:=
 
 ```bash
 rosrun ros_deploy node.py
+```
+
+## 通过 API 服务运行节点
+
+当模型部署在服务器上时，可使用 API 客户端节点将机器人采集的图像发送给服务器并发布速度指令：
+
+```bash
+rosrun ros_deploy api_client_node.py _server_url:=http://<server-ip>:8000 _instruction:="Find the kitchen"
+```
+
+如需自定义参数，可在配置文件中修改或通过参数重载：
+
+```yaml
+image_topic: "/rscamera_front/color/image"
+cmd_vel_topic: "/cmd_vel"
+server_url: "http://127.0.0.1:8000"
+linear_speed: 0.25
+angular_speed: 0.5
+request_timeout: 5.0
+default_instruction: "Please navigate according to the current mission."
+```
+
+运行时也可以指定配置路径：
+
+```bash
+rosrun ros_deploy api_client_node.py _config_path:=/full/path/to/api_client.yaml
 ```
 
 ## 更新指令
