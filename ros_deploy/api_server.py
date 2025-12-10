@@ -54,7 +54,10 @@ class WarmupResponse(BaseModel):
 
 
 def _get_model_path() -> str:
-    return os.getenv("UNINAVID_MODEL_PATH", DEFAULT_MODEL_PATH)
+    env_path = os.getenv("UNINAVID_MODEL_PATH")
+    if env_path:
+        return env_path if os.path.isabs(env_path) else os.path.abspath(os.path.join(REPO_ROOT, env_path))
+    return DEFAULT_MODEL_PATH
 
 
 def get_agent() -> UniNaVid_Agent:
