@@ -18,13 +18,13 @@ import uvicorn
 
 # Ensure repository root is on sys.path even when executed from inside the
 # ros_deploy package directory (e.g., `cd ros_deploy && python api_server.py`).
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
+# REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+# if REPO_ROOT not in sys.path:
+#     sys.path.insert(0, REPO_ROOT)
 
 from offline_eval_uninavid import UniNaVid_Agent
 
-DEFAULT_MODEL_PATH = os.path.join(REPO_ROOT, "model_zoo", "uninavid-7b-full-224-video-fps-1-grid-2")
+DEFAULT_MODEL_PATH = os.path.join("model_zoo", "uninavid-7b-full-224-video-fps-1-grid-2")
 
 app = FastAPI(title="Uni-NaVid API", version="1.0")
 
