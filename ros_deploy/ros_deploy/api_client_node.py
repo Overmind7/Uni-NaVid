@@ -16,6 +16,8 @@ from geometry_msgs.msg import Twist
 import rospy
 from sensor_msgs.msg import Image
 
+from ros_deploy import MotionController, TwistCommand, describe_command_plan
+
 
 class UniNaVidApiRosNode:
     """Subscribe to RGB frames, call remote Uni-NaVid API, and publish velocity."""
@@ -34,6 +36,20 @@ class UniNaVidApiRosNode:
         self.cmd_pub = rospy.Publisher(self.config["cmd_vel_topic"], Twist, queue_size=1)
         self.image_sub = rospy.Subscriber(
             self.config["image_topic"], Image, self._image_callback, queue_size=1, buff_size=2 ** 24
+        )
+
+        self.linear_speed = float(rospy.get_param("~linear_speed", self.config["linear_speed"]))
+        self.angular_speed = float(rospy.get_param("~angular_speed", self.config["angular_speed"]))
+        self.step_duration = float(rospy.get_param("~step_duration", self.config["step_duration"]))
+        self.ramp_duration = float(rospy.get_param("~ramp_duration", self.config["ramp_duration"]))
+        self.ramp_steps = int(rospy.get_param("~ramp_steps", self.config["ramp_steps"]))
+
+        self.controller = MotionController(
+            linear_speed=self.linear_speed,
+            angular_speed=self.angular_speed,
+            step_duration=self.step_duration,
+            ramp_duration=self.ramp_duration,
+            ramp_steps=self.ramp_steps,
         )
 
         rospy.loginfo(
@@ -63,6 +79,9 @@ class UniNaVidApiRosNode:
 
         config.setdefault("linear_speed", 0.25)
         config.setdefault("angular_speed", 0.5)
+        config.setdefault("step_duration", 1.0)
+        config.setdefault("ramp_duration", 0.2)
+        config.setdefault("ramp_steps", 5)
         config.setdefault("default_instruction", "")
         config.setdefault("request_timeout", 5.0)
         return config
@@ -103,20 +122,8 @@ class UniNaVidApiRosNode:
             rospy.logwarn_throttle(30.0, "Instruction is empty; API call will use a blank prompt.")
 
         actions = self._query_server(rgb_np, instruction)
-        if not actions:
-            rospy.logwarn("No actions returned by Uni-NaVid API; publishing stop Twist.")
-            twist = Twist()
-        else:
-            primary_action = actions[0].strip().lower()
-            twist = self._action_to_twist(primary_action)
-            rospy.loginfo(
-                "Action %s -> Twist linear.x=%.3f angular.z=%.3f",
-                primary_action,
-                twist.linear.x,
-                twist.angular.z,
-            )
-
-        self.cmd_pub.publish(twist)
+        self.controller.reset_stop()
+        self._execute_actions(actions)
 
     def _query_server(self, bgr_image, instruction: str) -> List[str]:
         rgb_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
@@ -141,21 +148,66 @@ class UniNaVidApiRosNode:
             rospy.logerr("Request to Uni-NaVid API failed: %s", exc)
             return []
 
-    def _action_to_twist(self, action: str) -> Twist:
+    def _execute_actions(self, actions: List[str]) -> None:
+        if not actions:
+            rospy.logwarn("No actions returned by Uni-NaVid API; publishing stop Twist.")
+            self._publish_stop_twist()
+            return
+
+        normalized_actions = [str(action).strip().lower() for action in actions if str(action).strip()]
+        if not normalized_actions:
+            rospy.logwarn("Actions list was empty after normalization; publishing stop Twist.")
+            self._publish_stop_twist()
+            return
+
+        if "stop" in normalized_actions:
+            rospy.loginfo("Stop action received; requesting controller stop and publishing zero velocity.")
+            self.controller.request_stop()
+            self._publish_stop_twist()
+            return
+
+        try:
+            commands = self.controller.plan_commands(normalized_actions)
+        except ValueError as exc:
+            rospy.logwarn("Failed to plan commands from actions %s: %s", normalized_actions, exc)
+            self._publish_stop_twist()
+            return
+
+        if not commands:
+            rospy.logwarn("Planning produced no commands; publishing stop Twist.")
+            self._publish_stop_twist()
+            return
+
+        rospy.loginfo("Planned %d Twist commands:", len(commands))
+        for line in describe_command_plan(commands):
+            rospy.loginfo(line)
+
+        self._publish_command_sequence(commands)
+
+    def _publish_command_sequence(self, commands: List[TwistCommand]) -> None:
+        rate = rospy.Rate(50)
+        for command in commands:
+            if self.controller.stop_requested:
+                break
+            if command.duration <= 0:
+                continue
+
+            twist = Twist()
+            twist.linear.x = command.linear_x
+            twist.angular.z = command.angular_z
+
+            end_time = rospy.Time.now() + rospy.Duration.from_sec(command.duration)
+            while rospy.Time.now() < end_time and not rospy.is_shutdown():
+                if self.controller.stop_requested:
+                    break
+                self.cmd_pub.publish(twist)
+                rate.sleep()
+
+        self._publish_stop_twist()
+
+    def _publish_stop_twist(self) -> None:
         twist = Twist()
-        if action == "forward":
-            twist.linear.x = float(self.config["linear_speed"])
-        elif action == "left":
-            twist.angular.z = float(self.config["angular_speed"])
-        elif action == "right":
-            twist.angular.z = -float(self.config["angular_speed"])
-        elif action == "backward":
-            twist.linear.x = -float(self.config["linear_speed"])
-        elif action == "stop":
-            pass
-        else:
-            rospy.logwarn("Unknown action '%s'; sending zero Twist.", action)
-        return twist
+        self.cmd_pub.publish(twist)
 
 
 def main() -> None:
