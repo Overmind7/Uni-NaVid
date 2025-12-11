@@ -1,6 +1,6 @@
-"""ROS deployment helper utilities."""
+"""ROS deployment utilities for Uni-NaVid."""
 
-from .ros_deploy import MotionController, TwistCommand, describe_command_plan, dry_run_commands
+from .controller import MotionController, TwistCommand, describe_command_plan, dry_run_commands
 
 __all__ = [
     "MotionController",
