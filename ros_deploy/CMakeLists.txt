@@ -10,6 +10,8 @@ find_package(catkin REQUIRED COMPONENTS
   cv_bridge
 )
 
+catkin_python_setup()
+
 add_service_files(
   FILES
   SetInstruction.srv
