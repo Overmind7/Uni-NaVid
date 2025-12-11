@@ -26,6 +26,8 @@ class UniNaVidApiRosNode:
         self.bridge = CvBridge()
         self.latest_image: Optional[np.ndarray] = None
         self.lock = threading.Lock()
+        self.command_thread: Optional[threading.Thread] = None
+        self.command_thread_lock = threading.Lock()
 
         self.config = self._load_config()
         self.server_url = rospy.get_param("~server_url", self.config["server_url"]).rstrip("/")
@@ -122,6 +124,7 @@ class UniNaVidApiRosNode:
             rospy.logwarn_throttle(30.0, "Instruction is empty; API call will use a blank prompt.")
 
         actions = self._query_server(rgb_np, instruction)
+        self._stop_command_thread()
         self.controller.reset_stop()
         self._execute_actions(actions)
 
@@ -182,7 +185,23 @@ class UniNaVidApiRosNode:
         for line in describe_command_plan(commands):
             rospy.loginfo(line)
 
-        self._publish_command_sequence(commands)
+        self._publish_command_sequence_async(commands)
+
+    def _stop_command_thread(self) -> None:
+        with self.command_thread_lock:
+            thread = self.command_thread
+            if thread and thread.is_alive():
+                self.controller.request_stop()
+                thread.join()
+            self.command_thread = None
+
+    def _publish_command_sequence_async(self, commands: List[TwistCommand]) -> None:
+        self._stop_command_thread()
+        with self.command_thread_lock:
+            self.command_thread = threading.Thread(
+                target=self._publish_command_sequence, args=(commands,), daemon=True
+            )
+            self.command_thread.start()
 
     def _publish_command_sequence(self, commands: List[TwistCommand]) -> None:
         rate = rospy.Rate(50)
