@@ -42,14 +42,19 @@ class UniNaVidApiRosNode:
 
         self.linear_speed = float(rospy.get_param("~linear_speed", self.config["linear_speed"]))
         self.angular_speed = float(rospy.get_param("~angular_speed", self.config["angular_speed"]))
-        self.step_duration = float(rospy.get_param("~step_duration", self.config["step_duration"]))
         self.ramp_duration = float(rospy.get_param("~ramp_duration", self.config["ramp_duration"]))
         self.ramp_steps = int(rospy.get_param("~ramp_steps", self.config["ramp_steps"]))
+        self.forward_distance_m = 0.5
+        self.spin_angle_rad = float(rospy.get_param("~spin_angle_rad", 3.141592653589793 / 6))
+        self.spin_init_duration_s = float(rospy.get_param("~spin_init_duration_s", 0.5))
+        self.publish_rate_hz = 10.0
 
         self.controller = MotionController(
             linear_speed=self.linear_speed,
             angular_speed=self.angular_speed,
-            step_duration=self.step_duration,
+            forward_distance_m=self.forward_distance_m,
+            spin_angle_rad=self.spin_angle_rad,
+            spin_init_duration_s=self.spin_init_duration_s,
             ramp_duration=self.ramp_duration,
             ramp_steps=self.ramp_steps,
         )
@@ -81,7 +86,6 @@ class UniNaVidApiRosNode:
 
         config.setdefault("linear_speed", 0.25)
         config.setdefault("angular_speed", 0.5)
-        config.setdefault("step_duration", 1.0)
         config.setdefault("ramp_duration", 0.2)
         config.setdefault("ramp_steps", 5)
         config.setdefault("default_instruction", "")
@@ -204,7 +208,7 @@ class UniNaVidApiRosNode:
             self.command_thread.start()
 
     def _publish_command_sequence(self, commands: List[TwistCommand]) -> None:
-        rate = rospy.Rate(50)
+        rate = rospy.Rate(self.publish_rate_hz)
         for command in commands:
             if self.controller.stop_requested:
                 break
