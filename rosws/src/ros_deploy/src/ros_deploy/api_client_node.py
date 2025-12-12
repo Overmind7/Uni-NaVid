@@ -26,9 +26,12 @@ class UniNaVidApiRosNode:
         self.bridge = CvBridge()
         self.latest_image: Optional[np.ndarray] = None
         self.lock = threading.Lock()
-        self.command_thread: Optional[threading.Thread] = None
-        self.command_thread_lock = threading.Lock()
-        self.active_actions: Optional[List[str]] = None
+        self._command_lock = threading.Lock()
+        self._new_command_event = threading.Event()
+        self._shutdown_event = threading.Event()
+        self._queued_commands: List[TwistCommand] = []
+        self._active_actions: Optional[List[str]] = None
+        self._commands_in_progress = False
         self.last_request_time = rospy.Time(0)
 
         self.config = self._load_config()
@@ -61,6 +64,10 @@ class UniNaVidApiRosNode:
             ramp_duration=self.ramp_duration,
             ramp_steps=self.ramp_steps,
         )
+
+        self._publisher_thread = threading.Thread(target=self._publisher_loop, daemon=True)
+        self._publisher_thread.start()
+        rospy.on_shutdown(self._on_shutdown)
 
         rospy.loginfo(
             "Uni-NaVid API ROS node ready. Sending requests to %s and publishing Twist on %s.",
@@ -127,14 +134,6 @@ class UniNaVidApiRosNode:
             rgb_np = self.latest_image.copy()
             instruction = self.instruction
 
-        with self.command_thread_lock:
-            if self.command_thread is not None and self.command_thread.is_alive():
-                rospy.loginfo_throttle(
-                    5.0,
-                    "Command thread active; skipping API request to avoid queuing new motions.",
-                )
-                return
-
         now = rospy.Time.now()
         if (now - self.last_request_time).to_sec() < self.api_cooldown_s:
             rospy.logdebug_throttle(
@@ -175,94 +174,131 @@ class UniNaVidApiRosNode:
     def _execute_actions(self, actions: List[str]) -> None:
         if not actions:
             rospy.logwarn("No actions returned by Uni-NaVid API; publishing stop Twist.")
-            self._stop_command_thread()
+            self._stop_active_commands()
             return
 
         normalized_actions = [str(action).strip().lower() for action in actions if str(action).strip()]
         if not normalized_actions:
             rospy.logwarn("Actions list was empty after normalization; publishing stop Twist.")
-            self._stop_command_thread()
+            self._stop_active_commands()
             return
 
-        with self.command_thread_lock:
-            thread_alive = self.command_thread is not None and self.command_thread.is_alive()
-            if thread_alive and self.active_actions == normalized_actions:
+        with self._command_lock:
+            if self._commands_in_progress and self._active_actions == normalized_actions:
                 rospy.loginfo_throttle(
-                    10.0, "Received same actions while command thread is running; ignoring update."
+                    10.0, "Received same actions while commands are in progress; ignoring update."
                 )
                 return
 
         if "stop" in normalized_actions:
             rospy.loginfo("Stop action received; requesting controller stop and publishing zero velocity.")
-            self._stop_command_thread()
+            self._stop_active_commands()
             return
 
-        self._stop_command_thread(publish_stop=False)
+        self._stop_active_commands(publish_stop=False)
         self.controller.reset_stop()
         try:
             commands = self.controller.plan_commands(normalized_actions)
         except ValueError as exc:
             rospy.logwarn("Failed to plan commands from actions %s: %s", normalized_actions, exc)
-            self._stop_command_thread()
+            self._stop_active_commands()
             return
 
         if not commands:
             rospy.logwarn("Planning produced no commands; publishing stop Twist.")
-            self._stop_command_thread()
+            self._stop_active_commands()
             return
 
         rospy.loginfo("Planned %d Twist commands:", len(commands))
         for line in describe_command_plan(commands):
             rospy.loginfo(line)
 
-        self._publish_command_sequence_async(commands, normalized_actions)
+        self._queue_commands(commands, normalized_actions)
 
-    def _stop_command_thread(self, *, publish_stop: bool = True) -> None:
-        with self.command_thread_lock:
-            thread = self.command_thread
-            if thread and thread.is_alive():
-                self.controller.request_stop()
-                thread.join()
-            self.command_thread = None
-            self.active_actions = None
+    def _queue_commands(self, commands: List[TwistCommand], normalized_actions: List[str]) -> None:
+        with self._command_lock:
+            self._queued_commands = list(commands)
+            self._active_actions = list(normalized_actions)
+            self._commands_in_progress = True
+        self._new_command_event.set()
+
+    def _stop_active_commands(self, *, publish_stop: bool = True) -> None:
+        self.controller.request_stop()
+        with self._command_lock:
+            self._queued_commands = []
+            self._commands_in_progress = False
+            self._active_actions = None
+        self._new_command_event.set()
         self.controller.reset_stop()
         if publish_stop:
             self._publish_stop_twist()
 
-    def _publish_command_sequence_async(
-        self, commands: List[TwistCommand], normalized_actions: List[str]
-    ) -> None:
-        with self.command_thread_lock:
-            self.command_thread = threading.Thread(
-                target=self._publish_command_sequence, args=(commands,), daemon=True
-            )
-            self.active_actions = list(normalized_actions)
-            self.command_thread.start()
-
-    def _publish_command_sequence(self, commands: List[TwistCommand]) -> None:
+    def _publisher_loop(self) -> None:
         rate = rospy.Rate(self.publish_rate_hz)
-        for command in commands:
-            if self.controller.stop_requested:
+        while not self._shutdown_event.is_set():
+            self._new_command_event.wait()
+            if self._shutdown_event.is_set():
                 break
-            if command.duration <= 0:
+
+            self._new_command_event.clear()
+            with self._command_lock:
+                commands = list(self._queued_commands)
+                self._queued_commands = []
+                active_actions = self._active_actions
+
+            if not commands:
+                self._publish_stop_twist()
+                with self._command_lock:
+                    self._commands_in_progress = False
+                    self._active_actions = None
                 continue
 
-            twist = Twist()
-            twist.linear.x = command.linear_x
-            twist.angular.z = command.angular_z
+            rospy.loginfo("Executing %d commands derived from actions: %s", len(commands), active_actions)
+            self.controller.reset_stop()
+            preempted = False
 
-            end_time = rospy.Time.now() + rospy.Duration.from_sec(command.duration)
-            while rospy.Time.now() < end_time and not rospy.is_shutdown():
-                if self.controller.stop_requested:
+            for command in commands:
+                if command.duration <= 0:
+                    continue
+
+                twist = Twist()
+                twist.linear.x = command.linear_x
+                twist.angular.z = command.angular_z
+
+                end_time = rospy.Time.now() + rospy.Duration.from_sec(command.duration)
+                while rospy.Time.now() < end_time and not rospy.is_shutdown():
+                    if (
+                        self._shutdown_event.is_set()
+                        or self._new_command_event.is_set()
+                        or self.controller.stop_requested
+                    ):
+                        preempted = True
+                        break
+                    self.cmd_pub.publish(twist)
+                    try:
+                        rate.sleep()
+                    except rospy.ROSInterruptException:
+                        preempted = True
+                        break
+
+                if preempted or self._shutdown_event.is_set():
                     break
-                self.cmd_pub.publish(twist)
-                rate.sleep()
 
-        self._publish_stop_twist()
-        with self.command_thread_lock:
-            self.command_thread = None
-            self.active_actions = None
-        self.controller.reset_stop()
+            if not preempted:
+                self._publish_stop_twist()
+
+            with self._command_lock:
+                if not preempted:
+                    self._commands_in_progress = False
+                    self._active_actions = None
+
+    def _on_shutdown(self) -> None:
+        self._shutdown_event.set()
+        self._new_command_event.set()
+        try:
+            self._publisher_thread.join(timeout=1.0)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _publish_stop_twist(self) -> None:
         twist = Twist()
