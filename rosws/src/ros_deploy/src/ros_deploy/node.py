@@ -26,6 +26,11 @@ class UniNaVidRosNode:
         self.latest_image = None
         self.latest_camera_info = None
         self.lock = threading.Lock()
+        self._command_lock = threading.Lock()
+        self._new_command_event = threading.Event()
+        self._shutdown_event = threading.Event()
+        self._queued_twist = Twist()
+        self._queued_duration = 0.0
 
         self.config = self._load_config()
         self.publish_rate_hz = 10.0
@@ -45,6 +50,10 @@ class UniNaVidRosNode:
         )
 
         self.service = rospy.Service("~set_instruction", SetInstruction, self._handle_set_instruction)
+
+        self._publisher_thread = threading.Thread(target=self._publisher_loop, daemon=True)
+        self._publisher_thread.start()
+        rospy.on_shutdown(self._on_shutdown)
 
         rospy.loginfo(
             "UniNaVid ROS node ready. Listening to %s and publishing Twist on %s.",
@@ -134,10 +143,7 @@ class UniNaVidRosNode:
             duration,
             self.publish_rate_hz,
         )
-        if duration > 0:
-            self._publish_twist_for_duration(twist, duration)
-        else:
-            self.cmd_pub.publish(twist)
+        self._queue_command(twist, duration)
 
     def _action_to_twist(self, action: str) -> Tuple[Twist, float]:
         twist = Twist()
@@ -160,17 +166,55 @@ class UniNaVidRosNode:
             rospy.logwarn("Unknown action '%s'; sending zero Twist.", action)
         return twist, duration
 
-    def _publish_twist_for_duration(self, twist: Twist, duration: float) -> None:
-        if duration <= 0:
-            return
+    def _queue_command(self, twist: Twist, duration: float) -> None:
+        """Send a command to the publisher thread, preempting any existing one."""
 
+        with self._command_lock:
+            self._queued_twist = twist
+            self._queued_duration = max(duration, 0.0)
+        self._new_command_event.set()
+
+    def _publisher_loop(self) -> None:
         rate = rospy.Rate(self.publish_rate_hz)
-        end_time = rospy.Time.now().to_sec() + duration
-        while rospy.Time.now().to_sec() < end_time and not rospy.is_shutdown():
-            self.cmd_pub.publish(twist)
-            rate.sleep()
+        while not self._shutdown_event.is_set():
+            self._new_command_event.wait()
+            if self._shutdown_event.is_set():
+                break
 
-        # Ensure the robot stops after finishing the command window.
+            self._new_command_event.clear()
+            with self._command_lock:
+                twist = self._queued_twist
+                duration = self._queued_duration
+
+            start_time = rospy.Time.now().to_sec()
+            end_time = start_time + duration
+
+            while not self._shutdown_event.is_set():
+                if self._new_command_event.is_set():
+                    self.cmd_pub.publish(Twist())
+                    break
+
+                self.cmd_pub.publish(twist)
+
+                if duration <= 0:
+                    break
+
+                if rospy.Time.now().to_sec() >= end_time:
+                    self.cmd_pub.publish(Twist())
+                    break
+
+                try:
+                    rate.sleep()
+                except rospy.ROSInterruptException:
+                    break
+
+    def _on_shutdown(self) -> None:
+        self._shutdown_event.set()
+        self._new_command_event.set()
+        try:
+            self._publisher_thread.join(timeout=1.0)
+        except Exception:  # noqa: BLE001
+            pass
         self.cmd_pub.publish(Twist())
 
 
