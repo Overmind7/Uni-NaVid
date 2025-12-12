@@ -28,6 +28,8 @@ class UniNaVidApiRosNode:
         self.lock = threading.Lock()
         self.command_thread: Optional[threading.Thread] = None
         self.command_thread_lock = threading.Lock()
+        self.active_actions: Optional[List[str]] = None
+        self.last_request_time = rospy.Time(0)
 
         self.config = self._load_config()
         self.server_url = rospy.get_param("~server_url", self.config["server_url"]).rstrip("/")
@@ -48,6 +50,7 @@ class UniNaVidApiRosNode:
         self.spin_angle_rad = float(rospy.get_param("~spin_angle_rad", 3.141592653589793 / 6))
         self.spin_init_duration_s = float(rospy.get_param("~spin_init_duration_s", 0.5))
         self.publish_rate_hz = 10.0
+        self.api_cooldown_s = float(rospy.get_param("~api_cooldown_s", 0.5))
 
         self.controller = MotionController(
             linear_speed=self.linear_speed,
@@ -124,12 +127,26 @@ class UniNaVidApiRosNode:
             rgb_np = self.latest_image.copy()
             instruction = self.instruction
 
+        with self.command_thread_lock:
+            if self.command_thread is not None and self.command_thread.is_alive():
+                rospy.loginfo_throttle(
+                    5.0,
+                    "Command thread active; skipping API request to avoid queuing new motions.",
+                )
+                return
+
+        now = rospy.Time.now()
+        if (now - self.last_request_time).to_sec() < self.api_cooldown_s:
+            rospy.logdebug_throttle(
+                5.0, "Within API cooldown window; skipping this frame's request."
+            )
+            return
+        self.last_request_time = now
+
         if not instruction:
             rospy.logwarn_throttle(30.0, "Instruction is empty; API call will use a blank prompt.")
 
         actions = self._query_server(rgb_np, instruction)
-        self._stop_command_thread()
-        self.controller.reset_stop()
         self._execute_actions(actions)
 
     def _query_server(self, bgr_image, instruction: str) -> List[str]:
@@ -158,53 +175,68 @@ class UniNaVidApiRosNode:
     def _execute_actions(self, actions: List[str]) -> None:
         if not actions:
             rospy.logwarn("No actions returned by Uni-NaVid API; publishing stop Twist.")
-            self._publish_stop_twist()
+            self._stop_command_thread()
             return
 
         normalized_actions = [str(action).strip().lower() for action in actions if str(action).strip()]
         if not normalized_actions:
             rospy.logwarn("Actions list was empty after normalization; publishing stop Twist.")
-            self._publish_stop_twist()
+            self._stop_command_thread()
             return
+
+        with self.command_thread_lock:
+            thread_alive = self.command_thread is not None and self.command_thread.is_alive()
+            if thread_alive and self.active_actions == normalized_actions:
+                rospy.loginfo_throttle(
+                    10.0, "Received same actions while command thread is running; ignoring update."
+                )
+                return
 
         if "stop" in normalized_actions:
             rospy.loginfo("Stop action received; requesting controller stop and publishing zero velocity.")
-            self.controller.request_stop()
-            self._publish_stop_twist()
+            self._stop_command_thread()
             return
 
+        self._stop_command_thread(publish_stop=False)
+        self.controller.reset_stop()
         try:
             commands = self.controller.plan_commands(normalized_actions)
         except ValueError as exc:
             rospy.logwarn("Failed to plan commands from actions %s: %s", normalized_actions, exc)
-            self._publish_stop_twist()
+            self._stop_command_thread()
             return
 
         if not commands:
             rospy.logwarn("Planning produced no commands; publishing stop Twist.")
-            self._publish_stop_twist()
+            self._stop_command_thread()
             return
 
         rospy.loginfo("Planned %d Twist commands:", len(commands))
         for line in describe_command_plan(commands):
             rospy.loginfo(line)
 
-        self._publish_command_sequence_async(commands)
+        self._publish_command_sequence_async(commands, normalized_actions)
 
-    def _stop_command_thread(self) -> None:
+    def _stop_command_thread(self, *, publish_stop: bool = True) -> None:
         with self.command_thread_lock:
             thread = self.command_thread
             if thread and thread.is_alive():
                 self.controller.request_stop()
                 thread.join()
             self.command_thread = None
+            self.active_actions = None
+        self.controller.reset_stop()
+        if publish_stop:
+            self._publish_stop_twist()
 
-    def _publish_command_sequence_async(self, commands: List[TwistCommand]) -> None:
-        self._stop_command_thread()
+    def _publish_command_sequence_async(
+        self, commands: List[TwistCommand], normalized_actions: List[str]
+    ) -> None:
         with self.command_thread_lock:
             self.command_thread = threading.Thread(
                 target=self._publish_command_sequence, args=(commands,), daemon=True
             )
+            self.active_actions = list(normalized_actions)
             self.command_thread.start()
 
     def _publish_command_sequence(self, commands: List[TwistCommand]) -> None:
@@ -227,6 +259,10 @@ class UniNaVidApiRosNode:
                 rate.sleep()
 
         self._publish_stop_twist()
+        with self.command_thread_lock:
+            self.command_thread = None
+            self.active_actions = None
+        self.controller.reset_stop()
 
     def _publish_stop_twist(self) -> None:
         twist = Twist()
