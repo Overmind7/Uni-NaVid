@@ -44,7 +44,9 @@ class MotionController:
         self,
         linear_speed: float = 0.2,
         angular_speed: float = 0.4,
-        step_duration: float = 1.0,
+        forward_distance_m: float = 0.5,
+        spin_angle_rad: float = 3.141592653589793 / 6,
+        spin_init_duration_s: float = 0.5,
         ramp_duration: float = 0.2,
         ramp_steps: int = 5,
     ) -> None:
@@ -53,20 +55,29 @@ class MotionController:
         Args:
             linear_speed: Magnitude of forward/backward speed in m/s.
             angular_speed: Magnitude of turning speed in rad/s.
-            step_duration: Base duration for each direction command.
+            forward_distance_m: Distance to travel for a forward/backward step.
+            spin_angle_rad: Angle (in radians) to rotate for left/right.
+            spin_init_duration_s: Extra time to allow wheel initialization
+                before/after turning.
             ramp_duration: Total time spent ramping up and down.
             ramp_steps: Number of interpolation steps per ramp segment.
         """
         if ramp_steps < 1:
             raise ValueError("ramp_steps must be >= 1")
-        if step_duration <= 0:
-            raise ValueError("step_duration must be positive")
         if ramp_duration < 0:
             raise ValueError("ramp_duration must be non-negative")
+        if forward_distance_m <= 0:
+            raise ValueError("forward_distance_m must be positive")
+        if spin_angle_rad <= 0:
+            raise ValueError("spin_angle_rad must be positive")
+        if spin_init_duration_s < 0:
+            raise ValueError("spin_init_duration_s must be non-negative")
 
         self.linear_speed = linear_speed
         self.angular_speed = angular_speed
-        self.step_duration = step_duration
+        self.forward_distance_m = forward_distance_m
+        self.spin_angle_rad = spin_angle_rad
+        self.spin_init_duration_s = spin_init_duration_s
         self.ramp_duration = ramp_duration
         self.ramp_steps = ramp_steps
         self._stop_event = threading.Event()
@@ -105,13 +116,21 @@ class MotionController:
     def _direction_to_twist(self, direction: str) -> TwistCommand:
         normalized = direction.strip().lower()
         if normalized == "forward":
-            return TwistCommand(linear_x=self.linear_speed, angular_z=0.0, duration=self.step_duration)
+            duration = self.forward_distance_m / self.linear_speed if self.linear_speed > 0 else 0.0
+            return TwistCommand(linear_x=self.linear_speed, angular_z=0.0, duration=duration)
         if normalized == "backward":
-            return TwistCommand(linear_x=-self.linear_speed, angular_z=0.0, duration=self.step_duration)
+            duration = self.forward_distance_m / self.linear_speed if self.linear_speed > 0 else 0.0
+            return TwistCommand(linear_x=-self.linear_speed, angular_z=0.0, duration=duration)
         if normalized == "left":
-            return TwistCommand(linear_x=0.0, angular_z=self.angular_speed, duration=self.step_duration)
+            duration = 0.0
+            if self.angular_speed != 0:
+                duration = self.spin_angle_rad / abs(self.angular_speed) + self.spin_init_duration_s
+            return TwistCommand(linear_x=0.0, angular_z=self.angular_speed, duration=duration)
         if normalized == "right":
-            return TwistCommand(linear_x=0.0, angular_z=-self.angular_speed, duration=self.step_duration)
+            duration = 0.0
+            if self.angular_speed != 0:
+                duration = self.spin_angle_rad / abs(self.angular_speed) + self.spin_init_duration_s
+            return TwistCommand(linear_x=0.0, angular_z=-self.angular_speed, duration=duration)
         raise ValueError(f"Unknown direction: {direction}")
 
     def _with_ramp(self, base: TwistCommand) -> List[TwistCommand]:
@@ -184,7 +203,9 @@ def dry_run_commands(
     *,
     linear_speed: float = 0.2,
     angular_speed: float = 0.4,
-    step_duration: float = 1.0,
+    forward_distance_m: float = 0.5,
+    spin_angle_rad: float = 3.141592653589793 / 6,
+    spin_init_duration_s: float = 0.5,
     ramp_duration: float = 0.2,
     ramp_steps: int = 5,
     logger: logging.Logger | None = None,
@@ -198,7 +219,9 @@ def dry_run_commands(
     controller = MotionController(
         linear_speed=linear_speed,
         angular_speed=angular_speed,
-        step_duration=step_duration,
+        forward_distance_m=forward_distance_m,
+        spin_angle_rad=spin_angle_rad,
+        spin_init_duration_s=spin_init_duration_s,
         ramp_duration=ramp_duration,
         ramp_steps=ramp_steps,
     )
