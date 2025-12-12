@@ -4,11 +4,13 @@
 
 ## 启动服务器
 
+服务器脚本已移动到仓库根目录，直接在项目根路径下运行：
+
 ```bash
-python ros_deploy/api_server.py --host 0.0.0.0 --port 8000 --model-path /path/to/uninavid/checkpoint
+python api_server.py --host 0.0.0.0 --port 8000 --model-path /path/to/uninavid/checkpoint
 ```
 
-> 提示：`api_server.py` 会自动将仓库根目录添加到 `PYTHONPATH`，因此即使在 `ros_deploy/` 目录内运行（如 `cd ros_deploy && python api_server.py`）也能正确导入 `offline_eval_uninavid` 与模型权重。使用 `uvicorn ros_deploy.api_server:app` 时仍建议在仓库根目录下执行，避免与同名 ROS 包混淆。
+> 提示：`api_server.py` 会自动将仓库根目录添加到 `PYTHONPATH`，因此即使在 `rosws/src/ros_deploy` 目录内运行（如 `cd rosws/src/ros_deploy && python ../../../api_server.py`）也能正确导入 `offline_eval_uninavid` 与模型权重。使用 `uvicorn api_server:app` 时仍建议在仓库根目录下执行，避免与同名 ROS 包混淆。
 
 `--model-path` 可覆盖环境变量 `UNINAVID_MODEL_PATH`。如果两者都未提供，服务器默认使用 `model_zoo/uninavid-7b-full-224-video-fps-1-grid-2`。
 
@@ -55,9 +57,11 @@ python ros_deploy/api_server.py --host 0.0.0.0 --port 8000 --model-path /path/to
 此软件包将 `UniNaVid_Agent` 封装成 ROS 节点，订阅 RGB 相机图像并通过 `geometry_msgs/Twist` 发布速度指令。
 
 ## 目录内容
-- `ros_deploy/node.py`：订阅 RGB 图像与相机信息，调用 `UniNaVid_Agent.act` 并发布速度指令的 ROS 节点。
-- `ros_deploy/api_client_node.py`：调用远端 Uni-NaVid API 服务，将返回的离散动作转换为 `geometry_msgs/Twist` 的 ROS 节点。
-- `ros_deploy/srv/SetInstruction.srv`：运行时更新导航指令字符串的服务接口。
+- `src/ros_deploy/node.py`：订阅 RGB 图像与相机信息，调用 `UniNaVid_Agent.act` 并发布速度指令的 ROS 节点逻辑。
+- `src/ros_deploy/api_client_node.py`：调用远端 Uni-NaVid API 服务，将返回的离散动作转换为 `geometry_msgs/Twist` 的 ROS 节点逻辑。
+- `scripts/node.py`：便于通过 `rosrun ros_deploy node.py` 启动的入口脚本。
+- `scripts/api_client_node.py`：便于通过 `rosrun ros_deploy api_client_node.py` 启动的入口脚本。
+- `srv/SetInstruction.srv`：运行时更新导航指令字符串的服务接口。
 - `config/default.yaml`：默认主题名称、模型路径与速度倍率配置。
 - `config/api_client.yaml`：使用 API 服务时的默认主题、服务器地址与超时设置。
 
